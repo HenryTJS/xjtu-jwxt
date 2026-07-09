@@ -216,3 +216,9 @@ __marimo__/
 
 # Streamlit
 .streamlit/secrets.toml
+
+# 爬虫输出文件（不上传）
+*.csv
+*.json
+response_error.html
+response_nonjson.html
