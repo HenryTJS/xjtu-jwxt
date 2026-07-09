@@ -36,9 +36,16 @@ BASE_HEADERS = {
     "DNT": "1",
 }
 
+# 每页最大条数（一次查完所有数据）
+PAGE_SIZE = "999"
+
 # ========================== 工具函数 ==========================
 def clean_cookie(cookie_str):
     """移除换行、制表符等空白字符，确保 Cookie 单行"""
+    cookie_str = cookie_str.strip()
+    # 兼容用户可能在 .env 值两侧加了引号的情况
+    if len(cookie_str) >= 2 and cookie_str[0] in ('"', "'") and cookie_str[-1] == cookie_str[0]:
+        cookie_str = cookie_str[1:-1]
     return ''.join(cookie_str.split())
 
 
@@ -62,6 +69,13 @@ def save_csv(data_list, prefix="data"):
 
     print(f"✅ 数据已保存至 {filename}（共 {len(data_list)} 条）")
     return filename
+
+
+def extract_rows(result):
+    """从教务系统 API 响应中提取 rows 数据列表"""
+    datas = result.get("datas", {})
+    module_data = next(iter(datas.values()), {}) if datas else {}
+    return module_data.get("rows", [])
 
 
 def request_post(url, data, referer):
@@ -91,11 +105,48 @@ def request_post(url, data, referer):
         return None
 
 
+def fetch_all_pages(url, data_template, referer, query_settings_key="querySetting"):
+    """
+    自动翻页获取所有数据。
+    从第 1 页开始，每页 PAGE_SIZE 条，直到某页返回空数据为止。
+    返回合并后的数据列表。
+    """
+    all_rows = []
+    page_number = 1
+
+    while True:
+        data = data_template.copy()
+        data["pageSize"] = PAGE_SIZE
+        data["pageNumber"] = str(page_number)
+
+        print(f"  正在获取第 {page_number} 页...")
+        result = request_post(url, data, referer)
+        if not result:
+            print(f"  ⚠️ 第 {page_number} 页请求失败，停止翻页。")
+            break
+
+        rows = extract_rows(result)
+        if not rows:
+            print(f"  第 {page_number} 页无数据，翻页结束。")
+            break
+
+        all_rows.extend(rows)
+        print(f"  第 {page_number} 页获取 {len(rows)} 条，累计 {len(all_rows)} 条。")
+        page_number += 1
+
+    return all_rows
+
+
 # ========================== 功能函数 ==========================
 
-def query_overall_plan(njdm="2025", faztdm="99", page_size=200, page_number=1):
-    """查询整体培养方案列表"""
+def query_overall_plan():
+    """查询整体培养方案列表（自动翻页，合并输出一个 CSV）"""
     print("\n===== 正在查询整体培养方案 =====")
+    njdm = input("请输入年级代码（示例：2025）：").strip()
+    if not njdm:
+        print("❌ 年级代码不能为空。")
+        return None
+
     url = "https://jwxt.xjtu.edu.cn/jwapp/sys/qxfacx/modules/pyfacxepg/qxpyfacxzl.do"
     referer = "https://jwxt.xjtu.edu.cn/jwapp/sys/qxfacx/*default/index.do"
     query_settings = [
@@ -113,39 +164,47 @@ def query_overall_plan(njdm="2025", faztdm="99", page_size=200, page_number=1):
             "caption": "",
             "builder": "equal",
             "linkOpt": "AND",
-            "value": faztdm
+            "value": "99"
         }
     ]
-    data = {
+    data_template = {
         "querySetting": json.dumps(query_settings, ensure_ascii=False),
         "*order": "-NJDM,+DWDM,+ZYDM",
-        "pageSize": str(page_size),
-        "pageNumber": str(page_number)
     }
-    result = request_post(url, data, referer)
-    if result:
-        data_list = result.get("data", [])
-        print(f"共获取 {len(data_list)} 条记录（当前页）")
-        save_csv(data_list, "overall_plan")
-    return result
+
+    all_rows = fetch_all_pages(url, data_template, referer)
+    if all_rows:
+        print(f"\n共获取 {len(all_rows)} 条记录")
+        save_csv(all_rows, "overall_plan")
+    return all_rows
 
 
-def query_specific_plan(pyfadm):
-    """查询具体培养方案课程（需加密参数）"""
+def query_specific_plan():
+    """查询具体培养方案课程（需 PYFADM）"""
     print("\n===== 正在查询具体培养方案课程 =====")
+    pyfadm = input("请输入 PYFADM 参数（示例：03406d85277248e69fd1b9cbcb261e25）：").strip()
+    if not pyfadm:
+        print("❌ PYFADM 不能为空。")
+        return None
+
     url = "https://jwxt.xjtu.edu.cn/jwapp/sys/jwpubapp/modules/pyfa/kzkccx.do"
     referer = "https://jwxt.xjtu.edu.cn/jwapp/sys/qxfacx/*default/index.do"
     data = {"PYFADM": pyfadm}
     result = request_post(url, data, referer)
     if result:
-        data_list = result.get("data", [])
+        data_list = extract_rows(result)
         save_csv(data_list, "specific_plan")
     return result
 
 
-def query_overall_schedule(semester="2025-2026-3", task_status="1", page_size=100, page_number=1):
-    """查询整体课表列表"""
+def query_overall_schedule():
+    """查询整体课表列表（自动翻页，合并输出一个 CSV）"""
     print("\n===== 正在查询整体课表列表 =====")
+    semester = input("请输入学期代码（示例：2025-2026-3）：").strip()
+    if not semester:
+        print("❌ 学期代码不能为空。")
+        return None
+
     url = "https://jwxt.xjtu.edu.cn/jwapp/sys/kcbcx/modules/qxkcb/qxfbkccx.do"
     referer = "https://jwxt.xjtu.edu.cn/jwapp/sys/kcbcx/*default/index.do"
     query_setting = [
@@ -158,7 +217,7 @@ def query_overall_schedule(semester="2025-2026-3", task_status="1", page_size=10
         [
             {
                 "name": "RWZTDM",
-                "value": task_status,
+                "value": "1",
                 "linkOpt": "and",
                 "builder": "equal"
             },
@@ -169,29 +228,36 @@ def query_overall_schedule(semester="2025-2026-3", task_status="1", page_size=10
             }
         ]
     ]
-    data = {
+    data_template = {
         "querySetting": json.dumps(query_setting, ensure_ascii=False),
         "*order": "+KKDWDM,+KCH,+KXH",
-        "pageSize": str(page_size),
-        "pageNumber": str(page_number)
     }
-    result = request_post(url, data, referer)
-    if result:
-        data_list = result.get("data", [])
-        print(f"共获取 {len(data_list)} 条记录（当前页）")
-        save_csv(data_list, "overall_schedule")
-    return result
+
+    all_rows = fetch_all_pages(url, data_template, referer)
+    if all_rows:
+        print(f"\n共获取 {len(all_rows)} 条记录")
+        save_csv(all_rows, "overall_schedule")
+    return all_rows
 
 
-def query_specific_schedule(semester, jxbid):
+def query_specific_schedule():
     """查询具体教学班课表详情"""
     print("\n===== 正在查询具体教学班课表 =====")
+    semester = input("请输入学期代码（示例：2025-2026-3）：").strip()
+    if not semester:
+        print("❌ 学期代码不能为空。")
+        return None
+    jxbid = input("请输入教学班ID（示例：2025-2026-3_2024-2025-2_2024-2025-2_001）：").strip()
+    if not jxbid:
+        print("❌ 教学班ID不能为空。")
+        return None
+
     url = "https://jwxt.xjtu.edu.cn/jwapp/sys/kcbcx/modules/qxkcb/qxkcb.do"
     referer = "https://jwxt.xjtu.edu.cn/jwapp/sys/kcbcx/*default/index.do"
     data = {"XNXQDM": semester, "JXBID": jxbid}
     result = request_post(url, data, referer)
     if result:
-        data_list = result.get("data", [])
+        data_list = extract_rows(result)
         save_csv(data_list, f"specific_schedule_{jxbid}")
     return result
 
@@ -202,7 +268,6 @@ def main():
     print("西安交通大学教务系统多功能爬虫")
     print("=" * 50)
     print("请先确保 .env 文件中的 COOKIE_STR 已更新为最新有效值！")
-    print("注意：Cookie 必须是一行连续的字符串，不要包含换行。")
     print("-" * 50)
     while True:
         print("\n请选择功能：")
@@ -216,30 +281,13 @@ def main():
             print("退出程序。")
             break
         elif choice == "1":
-            njdm = input("请输入年级代码（默认2025）：").strip() or "2025"
-            faztdm = input("请输入方案状态代码（默认99）：").strip() or "99"
-            page_size = input("请输入每页条数（默认200）：").strip() or "200"
-            page_number = input("请输入页码（默认1）：").strip() or "1"
-            query_overall_plan(njdm, faztdm, int(page_size), int(page_number))
+            query_overall_plan()
         elif choice == "2":
-            pyfadm = input("请输入 PYFADM 参数（必填）：").strip()
-            if not pyfadm:
-                print("❌ PYFADM 不能为空，请重新选择。")
-                continue
-            query_specific_plan(pyfadm)
+            query_specific_plan()
         elif choice == "3":
-            semester = input("请输入学期代码（默认2025-2026-3）：").strip() or "2025-2026-3"
-            task_status = input("请输入任务状态（默认1）：").strip() or "1"
-            page_size = input("请输入每页条数（默认100）：").strip() or "100"
-            page_number = input("请输入页码（默认1）：").strip() or "1"
-            query_overall_schedule(semester, task_status, int(page_size), int(page_number))
+            query_overall_schedule()
         elif choice == "4":
-            semester = input("请输入学期代码（默认2025-2026-3）：").strip() or "2025-2026-3"
-            jxbid = input("请输入教学班ID（必填）：").strip()
-            if not jxbid:
-                print("❌ 教学班ID不能为空，请重新选择。")
-                continue
-            query_specific_schedule(semester, jxbid)
+            query_specific_schedule()
         else:
             print("无效选择，请重新输入。")
 
