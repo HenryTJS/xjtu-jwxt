@@ -49,25 +49,53 @@ def clean_cookie(cookie_str):
     return ''.join(cookie_str.split())
 
 
+# 全局配置：输出 CSV 时需要删除的列
+# DROP_COLUMNS: 精确匹配列名
+# DROP_COLUMN_PATTERNS: 列名包含此字符串即删除（如 "DISPLAY" 会删除所有含 DISPLAY 的列）
+DROP_COLUMNS = {"PX", "CZSJ", "ZYZYSY", "SHYJ", "ZYFXDM", "FACCDM", "SLDM", "SHIP", "BY1", "BY2", "BY3", "BY4", "BY5", "BY6", "BY7", "BY8", "BY9", "PYMB", "XDLXDM", "SHR", "XLCCDM", "CZRXM", "XDYQ", "KSXQDM", "WID", "CZR", "CZIP", "ZGXK", "SHSJ", "ZGKC", "ZSYQXFXSZ", "SFFB", "SHRXM", "FATS", "BZ", "DWDM", "MBDM", "PYCCDM"}
+DROP_COLUMN_PATTERNS = ["DISPLAY", "KZZD"]
+
+
+def _should_drop_column(col_name):
+    """判断列名是否应该被删除"""
+    if col_name in DROP_COLUMNS:
+        return True
+    for pattern in DROP_COLUMN_PATTERNS:
+        if pattern in col_name:
+            return True
+    return False
+
+
 def save_csv(data_list, prefix="data"):
     """
     将数据列表保存为带时间戳的 CSV 文件。
+    自动删除 DROP_COLUMNS / DROP_COLUMN_PATTERNS 中匹配的列。
     data_list: list[dict] 格式的数据
     """
     if not data_list:
         print("⚠️ 没有数据可保存。")
         return None
 
+    # 删除指定列
+    cleaned_list = []
+    for row in data_list:
+        cleaned_row = {k: v for k, v in row.items() if not _should_drop_column(k)}
+        cleaned_list.append(cleaned_row)
+
+    if not cleaned_list or not cleaned_list[0]:
+        print("⚠️ 删除指定列后数据为空。")
+        return None
+
     filename = f"{prefix}_{datetime.now().strftime('%Y%m%d_%H%M%S')}.csv"
     # 提取所有键作为 CSV 表头（按第一个 dict 的键顺序）
-    fieldnames = list(data_list[0].keys())
+    fieldnames = list(cleaned_list[0].keys())
 
     with open(filename, 'w', newline='', encoding='utf-8-sig') as f:
         writer = csv.DictWriter(f, fieldnames=fieldnames)
         writer.writeheader()
-        writer.writerows(data_list)
+        writer.writerows(cleaned_list)
 
-    print(f"✅ 数据已保存至 {filename}（共 {len(data_list)} 条）")
+    print(f"✅ 数据已保存至 {filename}（共 {len(cleaned_list)} 条）")
     return filename
 
 
