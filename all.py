@@ -7,6 +7,8 @@
 2. 查询具体培养方案课程（需 PYFADM）
 3. 查询整体课表列表
 4. 查询具体教学班课表详情
+5. 查询课程列表（整体课程查询）
+6. 查询课程详情（根据课程号）
 """
 
 import requests
@@ -49,61 +51,55 @@ def clean_cookie(cookie_str):
     return ''.join(cookie_str.split())
 
 
-# 全局配置：输出 CSV 时需要删除的列
-# DROP_COLUMNS: 精确匹配列名
-# DROP_COLUMN_PATTERNS: 列名包含此字符串即删除（如 "DISPLAY" 会删除所有含 DISPLAY 的列）
-DROP_COLUMNS = {"PX", "CZSJ", "ZYZYSY", "SHYJ", "ZYFXDM", "FACCDM", "SLDM", "SHIP", "BY1", "BY2", "BY3", "BY4", "BY5", "BY6", "BY7", "BY8", "BY9", "PYMB", "XDLXDM", "SHR", "XLCCDM", "CZRXM", "XDYQ", "KSXQDM", "WID", "CZR", "CZIP", "ZGXK", "SHSJ", "ZGKC", "ZSYQXFXSZ", "SFFB", "SHRXM", "FATS", "BZ", "DWDM", "MBDM", "PYCCDM"}
-DROP_COLUMN_PATTERNS = ["DISPLAY", "KZZD"]
-
-
-def _should_drop_column(col_name):
-    """判断列名是否应该被删除"""
-    if col_name in DROP_COLUMNS:
-        return True
-    for pattern in DROP_COLUMN_PATTERNS:
-        if pattern in col_name:
-            return True
-    return False
-
-
 def save_csv(data_list, prefix="data"):
     """
-    将数据列表保存为带时间戳的 CSV 文件。
-    自动删除 DROP_COLUMNS / DROP_COLUMN_PATTERNS 中匹配的列。
+    将数据列表保存为带时间戳的 CSV 文件，保留所有列。
     data_list: list[dict] 格式的数据
     """
     if not data_list:
         print("⚠️ 没有数据可保存。")
         return None
 
-    # 删除指定列
-    cleaned_list = []
-    for row in data_list:
-        cleaned_row = {k: v for k, v in row.items() if not _should_drop_column(k)}
-        cleaned_list.append(cleaned_row)
-
-    if not cleaned_list or not cleaned_list[0]:
-        print("⚠️ 删除指定列后数据为空。")
-        return None
-
     filename = f"{prefix}_{datetime.now().strftime('%Y%m%d_%H%M%S')}.csv"
     # 提取所有键作为 CSV 表头（按第一个 dict 的键顺序）
-    fieldnames = list(cleaned_list[0].keys())
+    fieldnames = list(data_list[0].keys())
 
     with open(filename, 'w', newline='', encoding='utf-8-sig') as f:
         writer = csv.DictWriter(f, fieldnames=fieldnames)
         writer.writeheader()
-        writer.writerows(cleaned_list)
+        writer.writerows(data_list)
 
-    print(f"✅ 数据已保存至 {filename}（共 {len(cleaned_list)} 条）")
+    print(f"✅ 数据已保存至 {filename}（共 {len(data_list)} 条）")
     return filename
 
 
 def extract_rows(result):
-    """从教务系统 API 响应中提取 rows 数据列表"""
+    """从教务系统 API 响应中提取 rows 数据列表（通用）"""
     datas = result.get("datas", {})
-    module_data = next(iter(datas.values()), {}) if datas else {}
-    return module_data.get("rows", [])
+    # 如果 datas 为空，可能数据直接放在 result 的某个字段，尝试直接返回 result 本身
+    if not datas:
+        # 某些接口直接返回数组或对象，直接返回 result 作为单条数据
+        if isinstance(result, list):
+            return result
+        elif isinstance(result, dict):
+            # 如果 result 有 data 字段，尝试取 data
+            if "data" in result:
+                return result["data"] if isinstance(result["data"], list) else [result["data"]]
+            else:
+                # 否则将整个 result 作为一条数据
+                return [result]
+    else:
+        # 取第一个模块的 rows
+        module_data = next(iter(datas.values()), {})
+        rows = module_data.get("rows", [])
+        if rows:
+            return rows
+        # 如果 rows 为空，尝试取第一个模块的 data
+        if "data" in module_data:
+            return module_data["data"] if isinstance(module_data["data"], list) else [module_data["data"]]
+        # 否则将整个模块数据作为一条
+        return [module_data]
+    return []
 
 
 def request_post(url, data, referer):
@@ -133,14 +129,15 @@ def request_post(url, data, referer):
         return None
 
 
-def fetch_all_pages(url, data_template, referer, query_settings_key="querySetting"):
+def fetch_all_pages(url, data_template, referer):
     """
     自动翻页获取所有数据。
-    从第 1 页开始，每页 PAGE_SIZE 条，直到某页返回空数据为止。
+    从第 1 页开始，每页 PAGE_SIZE 条，根据 totalSize 判断是否继续翻页。
     返回合并后的数据列表。
     """
     all_rows = []
     page_number = 1
+    total_size = None
 
     while True:
         data = data_template.copy()
@@ -153,6 +150,14 @@ def fetch_all_pages(url, data_template, referer, query_settings_key="querySettin
             print(f"  ⚠️ 第 {page_number} 页请求失败，停止翻页。")
             break
 
+        # 获取 totalSize（仅在第一次记录）
+        if total_size is None:
+            datas = result.get("datas", {})
+            module_data = next(iter(datas.values()), {}) if datas else {}
+            total_size = module_data.get("totalSize", 0)
+            if total_size:
+                print(f"  共 {total_size} 条数据，开始翻页获取...")
+
         rows = extract_rows(result)
         if not rows:
             print(f"  第 {page_number} 页无数据，翻页结束。")
@@ -160,6 +165,12 @@ def fetch_all_pages(url, data_template, referer, query_settings_key="querySettin
 
         all_rows.extend(rows)
         print(f"  第 {page_number} 页获取 {len(rows)} 条，累计 {len(all_rows)} 条。")
+
+        # 判断是否还有更多数据
+        if total_size is not None and len(all_rows) >= total_size:
+            print(f"  已获取全部 {total_size} 条数据，翻页结束。")
+            break
+
         page_number += 1
 
     return all_rows
@@ -290,6 +301,46 @@ def query_specific_schedule():
     return result
 
 
+# ========================== 新增功能：课程查询 ==========================
+
+def query_course_list():
+    """查询课程列表（整体课程查询，自动翻页）"""
+    print("\n===== 正在查询课程列表 =====")
+    url = "https://jwxt.xjtu.edu.cn/jwapp/sys/kccx/modules/kccx/kcxxcx.do"
+    referer = "https://jwxt.xjtu.edu.cn/jwapp/sys/kccx/*default/index.do"
+    data_template = {
+        "KCZTDM": "1",
+    }
+
+    all_rows = fetch_all_pages(url, data_template, referer)
+    if all_rows:
+        print(f"\n共获取 {len(all_rows)} 条课程记录")
+        save_csv(all_rows, "course_list")
+    return all_rows
+
+
+def query_course_detail():
+    """查询课程详情（根据课程号）"""
+    print("\n===== 正在查询课程详情 =====")
+    kch = input("请输入课程号（示例：JAPN540912）：").strip()
+    if not kch:
+        print("❌ 课程号不能为空。")
+        return None
+
+    url = "https://jwxt.xjtu.edu.cn/jwapp/sys/kccx/kcxq/initKcdg.do"
+    referer = "https://jwxt.xjtu.edu.cn/jwapp/sys/kccx/*default/index.do"
+    data = {"KCH": kch}
+    result = request_post(url, data, referer)
+    if result:
+        data_list = extract_rows(result)
+        if data_list:
+            save_csv(data_list, f"course_detail_{kch}")
+        else:
+            # 如果提取不到 rows，可能数据直接放在 result 中，我们直接保存整个 result 为一条
+            save_csv([result], f"course_detail_{kch}")
+    return result
+
+
 # ========================== 交互式菜单 ==========================
 def main():
     print("=" * 50)
@@ -303,6 +354,8 @@ def main():
         print("2. 查询具体培养方案课程（需 PYFADM）")
         print("3. 查询整体课表列表")
         print("4. 查询具体教学班课表详情")
+        print("5. 查询课程列表（整体课程查询）")
+        print("6. 查询课程详情（根据课程号）")
         print("0. 退出")
         choice = input("请输入数字选择：").strip()
         if choice == "0":
@@ -316,6 +369,10 @@ def main():
             query_overall_schedule()
         elif choice == "4":
             query_specific_schedule()
+        elif choice == "5":
+            query_course_list()
+        elif choice == "6":
+            query_course_detail()
         else:
             print("无效选择，请重新输入。")
 
