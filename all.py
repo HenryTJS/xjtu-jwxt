@@ -4,18 +4,17 @@
 西安交通大学教务系统多功能爬虫（Cookie 分离 + CSV 输出）
 支持：
 1. 查询整体培养方案列表
-2. 查询具体培养方案课程（需 PYFADM）
+2. 查询具体培养方案课程
 3. 查询整体课表列表
 4. 查询具体教学班课表详情
-5. 查询课程列表（整体课程查询）
-6. 查询课程详情（根据课程号）
+5. 查询课程列表
+6. 查询课程详情
 """
 
 import requests
 import json
 import csv
 import os
-from datetime import datetime
 from dotenv import load_dotenv
 
 # ========================== 加载环境变量 ==========================
@@ -53,14 +52,14 @@ def clean_cookie(cookie_str):
 
 def save_csv(data_list, prefix="data"):
     """
-    将数据列表保存为带时间戳的 CSV 文件，保留所有列。
+    将数据列表保存为 CSV 文件，保留所有列。
     data_list: list[dict] 格式的数据
     """
     if not data_list:
         print("⚠️ 没有数据可保存。")
         return None
 
-    filename = f"{prefix}_{datetime.now().strftime('%Y%m%d_%H%M%S')}.csv"
+    filename = f"{prefix}.csv"
     # 提取所有键作为 CSV 表头（按第一个 dict 的键顺序）
     fieldnames = list(data_list[0].keys())
 
@@ -214,7 +213,7 @@ def query_overall_plan():
     all_rows = fetch_all_pages(url, data_template, referer)
     if all_rows:
         print(f"\n共获取 {len(all_rows)} 条记录")
-        save_csv(all_rows, "overall_plan")
+        save_csv(all_rows, f"overall_plan_{njdm}")
     return all_rows
 
 
@@ -232,7 +231,7 @@ def query_specific_plan():
     result = request_post(url, data, referer)
     if result:
         data_list = extract_rows(result)
-        save_csv(data_list, "specific_plan")
+        save_csv(data_list, f"specific_plan_{pyfadm}")
     return result
 
 
@@ -275,21 +274,20 @@ def query_overall_schedule():
     all_rows = fetch_all_pages(url, data_template, referer)
     if all_rows:
         print(f"\n共获取 {len(all_rows)} 条记录")
-        save_csv(all_rows, "overall_schedule")
+        save_csv(all_rows, f"overall_schedule_{semester}")
     return all_rows
 
 
 def query_specific_schedule():
     """查询具体教学班课表详情"""
     print("\n===== 正在查询具体教学班课表 =====")
-    semester = input("请输入学期代码（示例：2025-2026-3）：").strip()
-    if not semester:
-        print("❌ 学期代码不能为空。")
-        return None
-    jxbid = input("请输入教学班ID（示例：2025-2026-3_2024-2025-2_2024-2025-2_001）：").strip()
+    jxbid = input("请输入教学班ID（示例：202620271MACH40460101）：").strip()
     if not jxbid:
         print("❌ 教学班ID不能为空。")
         return None
+
+    # 从教学班ID前9位自动提取学期代码（如 202620271 → 2026-2027-1）
+    semester = f"{jxbid[:4]}-{jxbid[4:8]}-{jxbid[8:9]}"
 
     url = "https://jwxt.xjtu.edu.cn/jwapp/sys/kcbcx/modules/qxkcb/qxkcb.do"
     referer = "https://jwxt.xjtu.edu.cn/jwapp/sys/kcbcx/*default/index.do"
@@ -351,11 +349,11 @@ def main():
     while True:
         print("\n请选择功能：")
         print("1. 查询整体培养方案列表")
-        print("2. 查询具体培养方案课程（需 PYFADM）")
+        print("2. 查询具体培养方案课程")
         print("3. 查询整体课表列表")
         print("4. 查询具体教学班课表详情")
-        print("5. 查询课程列表（整体课程查询）")
-        print("6. 查询课程详情（根据课程号）")
+        print("5. 查询课程列表")
+        print("6. 查询课程详情")
         print("0. 退出")
         choice = input("请输入数字选择：").strip()
         if choice == "0":
