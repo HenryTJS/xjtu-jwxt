@@ -1,5 +1,3 @@
-#!/usr/bin/env python3
-# -*- coding: utf-8 -*-
 """
 西安交通大学教务系统多功能爬虫（Cookie 分离 + CSV 输出）
 支持：
@@ -9,6 +7,10 @@
 4. 查询具体教学班课表详情
 5. 查询课程列表
 6. 查询课程详情
+7. 查询成绩
+8. 查询考试安排
+9. 查询课程表
+10. 查询我的课表
 """
 
 import requests
@@ -26,7 +28,7 @@ if not COOKIE_STR:
     print("   参考 .env.example 文件进行配置。")
     exit(1)
 
-# 通用请求头（不含 Cookie，由各函数添加）
+# 通用请求头
 BASE_HEADERS = {
     "Accept": "application/json, text/javascript, */*; q=0.01",
     "Accept-Language": "zh-CN,zh;q=0.9,en;q=0.8,en-GB;q=0.7,en-US;q=0.6",
@@ -37,7 +39,7 @@ BASE_HEADERS = {
     "DNT": "1",
 }
 
-# 每页最大条数（一次查完所有数据）
+# 每页最大条数
 PAGE_SIZE = "999"
 
 # ========================== 工具函数 ==========================
@@ -87,6 +89,9 @@ def extract_rows(result):
             else:
                 # 否则将整个 result 作为一条数据
                 return [result]
+    elif isinstance(datas, list):
+        # datas 本身就是一个列表（如成绩接口），直接返回
+        return datas
     else:
         # 取第一个模块的 rows
         module_data = next(iter(datas.values()), {})
@@ -111,6 +116,33 @@ def request_post(url, data, referer):
 
     try:
         resp = requests.post(url, headers=headers, data=data, timeout=10)
+        resp.raise_for_status()
+        return resp.json()
+    except requests.exceptions.RequestException as e:
+        print(f"❌ 网络请求失败: {e}")
+        # 保存原始响应以便调试
+        with open("response_error.html", "w", encoding='utf-8') as f:
+            f.write(resp.text)
+        print("原始响应已保存到 response_error.html")
+        return None
+    except json.JSONDecodeError:
+        print("❌ 返回内容不是有效的 JSON，可能是 Cookie 失效或参数错误")
+        with open("response_nonjson.html", "w", encoding='utf-8') as f:
+            f.write(resp.text)
+        print("原始响应已保存到 response_nonjson.html")
+        return None
+
+
+def request_get(url, params, referer):
+    """发送 GET 请求并返回 JSON 结果，自动处理头部编码"""
+    headers = BASE_HEADERS.copy()
+    # 清理 Cookie 中的空白字符
+    headers["Cookie"] = clean_cookie(COOKIE_STR)
+    # 只设置域名级别的 Referer，避免长字符串中可能的非 ASCII 字符
+    headers["Referer"] = referer
+
+    try:
+        resp = requests.get(url, headers=headers, params=params, timeout=10)
         resp.raise_for_status()
         return resp.json()
     except requests.exceptions.RequestException as e:
@@ -339,6 +371,92 @@ def query_course_detail():
     return result
 
 
+# ========================== 新增功能：成绩/考试/课程表查询 ==========================
+
+def query_scores():
+    """查询成绩（基于 homeapp 学生接口）"""
+    print("\n===== 正在查询成绩 =====")
+    term = input("请输入学期代码（示例：2025-2026-2）：").strip()
+    if not term:
+        print("❌ 学期代码不能为空。")
+        return None
+
+    url = "https://jwxt.xjtu.edu.cn/jwapp/sys/homeapp/api/home/student/scores.do"
+    referer = "https://jwxt.xjtu.edu.cn/jwapp/sys/homeapp/home/index.html"
+    params = {"termCode": term}
+    result = request_get(url, params, referer)
+    if result:
+        data_list = extract_rows(result)
+        if data_list:
+            save_csv(data_list, f"scores_{term}")
+        else:
+            save_csv([result], f"scores_{term}")
+    return result
+
+
+def query_exams():
+    """查询考试安排（基于 homeapp 学生接口）"""
+    print("\n===== 正在查询考试安排 =====")
+    term = input("请输入学期代码（示例：2025-2026-2）：").strip()
+    if not term:
+        print("❌ 学期代码不能为空。")
+        return None
+
+    url = "https://jwxt.xjtu.edu.cn/jwapp/sys/homeapp/api/home/student/exams.do"
+    referer = "https://jwxt.xjtu.edu.cn/jwapp/sys/homeapp/home/index.html"
+    params = {"termCode": term}
+    result = request_get(url, params, referer)
+    if result:
+        data_list = extract_rows(result)
+        if data_list:
+            save_csv(data_list, f"exams_{term}")
+        else:
+            save_csv([result], f"exams_{term}")
+    return result
+
+
+def query_courses():
+    """查询课程表（基于 homeapp 学生接口）"""
+    print("\n===== 正在查询课程表 =====")
+    term = input("请输入学期代码（示例：2025-2026-2）：").strip()
+    if not term:
+        print("❌ 学期代码不能为空。")
+        return None
+
+    url = "https://jwxt.xjtu.edu.cn/jwapp/sys/homeapp/api/home/student/courses.do"
+    referer = "https://jwxt.xjtu.edu.cn/jwapp/sys/homeapp/home/index.html"
+    params = {"termCode": term}
+    result = request_get(url, params, referer)
+    if result:
+        data_list = extract_rows(result)
+        if data_list:
+            save_csv(data_list, f"courses_{term}")
+        else:
+            save_csv([result], f"courses_{term}")
+    return result
+
+
+def query_my_schedule():
+    """查询我的课表（基于 wdkb 模块 xskcb.do 接口）"""
+    print("\n===== 正在查询我的课表 =====")
+    term = input("请输入学期代码（示例：2026-2027-1）：").strip()
+    if not term:
+        print("❌ 学期代码不能为空。")
+        return None
+
+    url = "https://jwxt.xjtu.edu.cn/jwapp/sys/wdkb/modules/xskcb/xskcb.do"
+    referer = "https://jwxt.xjtu.edu.cn/jwapp/sys/wdkb/*default/index.do?min=1"
+    data = {"XNXQDM": term}
+    result = request_post(url, data, referer)
+    if result:
+        data_list = extract_rows(result)
+        if data_list:
+            save_csv(data_list, f"my_schedule_{term}")
+        else:
+            save_csv([result], f"my_schedule_{term}")
+    return result
+
+
 # ========================== 交互式菜单 ==========================
 def main():
     print("=" * 50)
@@ -354,6 +472,10 @@ def main():
         print("4. 查询具体教学班课表详情")
         print("5. 查询课程列表")
         print("6. 查询课程详情")
+        print("7. 查询成绩")
+        print("8. 查询考试安排")
+        print("9. 查询课程表")
+        print("10. 查询我的课表")
         print("0. 退出")
         choice = input("请输入数字选择：").strip()
         if choice == "0":
@@ -371,6 +493,14 @@ def main():
             query_course_list()
         elif choice == "6":
             query_course_detail()
+        elif choice == "7":
+            query_scores()
+        elif choice == "8":
+            query_exams()
+        elif choice == "9":
+            query_courses()
+        elif choice == "10":
+            query_my_schedule()
         else:
             print("无效选择，请重新输入。")
 
